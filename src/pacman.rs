@@ -27,8 +27,38 @@ impl Pacman {
             ));
         }
 
-        let stdout = String::from_utf8(output.stdout)
-            .context("pacman produced invalid UTF-8")?;
+        let stdout = String::from_utf8(output.stdout).context("pacman produced invalid UTF-8")?;
+
+        let mut packages = BTreeSet::new();
+
+        for line in stdout.lines() {
+            let package = line.trim();
+
+            if package.is_empty() {
+                continue;
+            }
+
+            packages.insert(package.to_string());
+        }
+
+        Ok(packages)
+    }
+
+    pub fn foreign_packages(&self) -> Result<BTreeSet<String>> {
+        let output = Command::new("pacman")
+            .args(["-Qm"])
+            .output()
+            .context("could not execute pacman")?;
+
+        if !output.status.success() {
+            return Err(anyhow!(
+                "pacman -Qm exited with {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+
+        let stdout = String::from_utf8(output.stdout).context("pacman produced invalid UTF-8")?;
 
         let mut packages = BTreeSet::new();
 

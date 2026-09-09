@@ -1,14 +1,18 @@
+mod aur;
 mod cli;
 mod config;
 mod diff;
+mod hash;
 mod pacman;
+mod store;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use cli::{Cli, Command};
+use cli::{AurCommand, Cli, Command};
 use config::load_config;
 use diff::{PackageDiff, format_diff};
 use pacman::Pacman;
+use std::collections::BTreeSet;
 
 fn main() {
     if let Err(error) = run() {
@@ -34,8 +38,23 @@ fn run() -> Result<()> {
                 .explicit_packages()
                 .context("failed to query installed packages")?;
 
+            let foreign = pacman
+                .foreign_packages()
+                .context("failed to query foreign packages")?;
+
             let desired = config.package_set();
-            let diff = PackageDiff::between(&desired, &actual);
+
+            let diff = PackageDiff::between(
+                &desired,
+                |name| {
+                    config
+                        .package(name)
+                        .map(|package| package.source)
+                        .unwrap_or(config::PackageSource::Repo)
+                },
+                &actual,
+                &foreign,
+            );
 
             print!("{}", format_diff(&diff));
 
@@ -50,8 +69,23 @@ fn run() -> Result<()> {
                 .explicit_packages()
                 .context("failed to query installed packages")?;
 
+            let foreign = pacman
+                .foreign_packages()
+                .context("failed to query foreign packages")?;
+
             let desired = config.package_set();
-            let diff = PackageDiff::between(&desired, &actual);
+
+            let diff = PackageDiff::between(
+                &desired,
+                |name| {
+                    config
+                        .package(name)
+                        .map(|package| package.source)
+                        .unwrap_or(config::PackageSource::Repo)
+                },
+                &actual,
+                &foreign,
+            );
 
             if diff.is_empty() {
                 println!("System matches {}.", file.display());
@@ -81,14 +115,40 @@ fn run() -> Result<()> {
                 );
             }
 
+            let aur_packages = config.aur_packages();
+
+            if !aur_packages.is_empty() {
+                anyhow::bail!(
+                    "{} declares AUR packages, but AUR installation is not \
+                     implemented yet. Phase 2 can inspect and fetch AUR \
+                     packages; Phase 4 will handle building/installing them.",
+                    aur_packages.iter().cloned().collect::<Vec<_>>().join(", ")
+                );
+            }
+
             let pacman = Pacman::new();
 
             let actual = pacman
                 .explicit_packages()
                 .context("failed to query installed packages")?;
 
+            let foreign = pacman
+                .foreign_packages()
+                .context("failed to query foreign packages")?;
+
             let desired = config.package_set();
-            let diff = PackageDiff::between(&desired, &actual);
+
+            let diff = PackageDiff::between(
+                &desired,
+                |name| {
+                    config
+                        .package(name)
+                        .map(|package| package.source)
+                        .unwrap_or(config::PackageSource::Repo)
+                },
+                &actual,
+                &foreign,
+            );
 
             if diff.is_empty() {
                 println!("System already matches {}.", file.display());
@@ -109,42 +169,126 @@ fn run() -> Result<()> {
                 return Ok(());
             }
 
-            if !diff.install.is_empty() {
+            let install: BTreeSet<String> = diff
+                .install
+                .iter()
+                .map(|change| change.name.clone())
+                .collect();
+
+            let remove: BTreeSet<String> = diff
+                .remove
+                .iter()
+                .map(|change| change.name.clone())
+                .collect();
+
+            if !install.is_empty() {
                 println!();
                 println!(
                     "Installing {} package{}...",
-                    diff.install.len(),
-                    if diff.install.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
+                    install.len(),
+                    if install.len() == 1 { "" } else { "s" }
                 );
 
                 pacman
-                    .install(&diff.install)
+                    .install(&install)
                     .context("pacman failed while installing packages")?;
             }
 
-            if !diff.remove.is_empty() {
+            if !remove.is_empty() {
                 println!();
                 println!(
                     "Removing {} package{}...",
-                    diff.remove.len(),
-                    if diff.remove.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
+                    remove.len(),
+                    if remove.len() == 1 { "" } else { "s" }
                 );
 
                 pacman
-                    .remove(&diff.remove)
+                    .remove(&remove)
                     .context("pacman failed while removing packages")?;
             }
 
             println!();
             println!("System reconciled successfully.");
+
+            Ok(())
+        }
+
+        Command::Aur { command } => run_aur(command),
+    }
+}
+
+fn run_aur(command: AurCommand) -> Result<()> {
+    let client = aur::AurClient::new()?;
+
+    match command {
+        AurCommand::Info { package } => {
+            let info = client.info(&package)?;
+
+            println!("Package:       {}", info.name);
+            println!("Version:       {}", info.version);
+            println!("Package base:  {}", info.package_base);
+
+            if let Some(maintainer) = info.maintainer {
+                println!("Maintainer:    {maintainer}");
+            }
+
+            println!("Votes:         {}", info.num_votes);
+            println!("Popularity:    {:.2}", info.popularity);
+
+            if let Some(description) = info.description {
+                println!("Description:   {description}");
+            }
+
+            if !info.depends.is_empty() {
+                println!();
+                println!("Dependencies:");
+
+                for dependency in info.depends {
+                    println!("  {dependency}");
+                }
+            }
+
+            if !info.make_depends.is_empty() {
+                println!();
+                println!("Make dependencies:");
+
+                for dependency in info.make_depends {
+                    println!("  {dependency}");
+                }
+            }
+
+            if !info.check_depends.is_empty() {
+                println!();
+                println!("Check dependencies:");
+
+                for dependency in info.check_depends {
+                    println!("  {dependency}");
+                }
+            }
+
+            Ok(())
+        }
+
+        AurCommand::Fetch { package } => {
+            let info = client.info(&package)?;
+            let source = client.fetch_to_store(&info, &store::ensure_aur_store()?)?;
+
+            println!("Fetched {}.", info.name);
+            println!("Source: {}", source.display());
+
+            Ok(())
+        }
+
+        AurCommand::Hash { package } => {
+            let info = client.info(&package)?;
+            let source = client.fetch_to_store(&info, &store::ensure_aur_store()?)?;
+
+            let source_hash = hash::hash_directory(&source)?;
+
+            println!("Package:     {}", info.name);
+            println!("Version:     {}", info.version);
+            println!("Source:      {}", source.display());
+            println!("Source hash: sha256:{source_hash}");
 
             Ok(())
         }

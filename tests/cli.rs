@@ -37,9 +37,7 @@ packages = [
         .arg(&config)
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "unsupported config version",
-        ));
+        .stderr(predicate::str::contains("unsupported config version"));
 }
 
 #[test]
@@ -91,7 +89,5 @@ packages = []
         .arg(&config)
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "Refusing to remove every",
-        ));
+        .stderr(predicate::str::contains("Refusing to remove every"));
 }

@@ -40,14 +40,37 @@ pub enum Command {
         dry_run: bool,
 
         /// Permit an empty package declaration.
-        ///
-        /// Without this flag, an empty declaration is rejected because
-        /// applying it would attempt to remove every explicitly installed
-        /// package.
         #[arg(long)]
         allow_empty: bool,
     },
 
+    /// Query and retrieve AUR packages.
+    Aur {
+        #[command(subcommand)]
+        command: AurCommand,
+    },
+
     /// Print the pdecl version.
     Version,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AurCommand {
+    /// Show metadata for an AUR package.
+    Info {
+        /// AUR package name.
+        package: String,
+    },
+
+    /// Fetch an AUR package snapshot into the local pdecl store.
+    Fetch {
+        /// AUR package name.
+        package: String,
+    },
+
+    /// Fetch an AUR package and print its deterministic source hash.
+    Hash {
+        /// AUR package name.
+        package: String,
+    },
 }
